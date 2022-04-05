@@ -10,13 +10,19 @@ device = torch.device("cuda")
 
 
 def add_sparse_args(parser):
+    parser.add_argument('--sparse', action='store_true', help='Enable sparse mode. Default: True.')
+    parser.add_argument('--fix', action='store_true', help='Fix sparse connectivity during training. Default: True.')
+    parser.add_argument('--sparse_init', type=str, default='uniform', help='sparse initialization')
     parser.add_argument('--growth', type=str, default='random', help='Growth mode. Choose from: momentum, random, gradient.')
     parser.add_argument('--death', type=str, default='magnitude', help='Death mode / pruning mode. Choose from: magnitude, SET, threshold.')
     parser.add_argument('--redistribution', type=str, default='none', help='Redistribution mode. Choose from: momentum, magnitude, nonzeros, or none.')
     parser.add_argument('--death-rate', type=float, default=0.50, help='The pruning rate / death rate.')
     parser.add_argument('--density', type=float, default=0.33, help='The density of the overall sparse network.')
-    parser.add_argument('--sparse', action='store_true', help='Enable sparse mode. Default: True.')
-    parser.add_argument('--sparse_init', type=str, default='uniform', help='sparse initialization')
+    parser.add_argument('--update_frequency', type=int, default=100, metavar='N',
+                        help='how many iterations to train between parameter exploration')
+    parser.add_argument('--decay-schedule', type=str, default='cosine',
+                        help='The decay schedule for the pruning rate. Default: cosine. Choose from: cosine, linear.')
+
 
 class CosineDecay(object):
     def __init__(self, death_rate, T_max, eta_min=0.005, last_epoch=-1):
@@ -46,12 +52,12 @@ class LinearDecay(object):
 
 
 class Masking(object):
-    def __init__(self, optimizer, death_rate=0.3, growth_death_ratio=1.0, death_rate_decay=None, death_mode='magnitude', growth_mode='momentum', redistribution_mode='momentum', threshold=0.001, model='LSTM'):
+    def __init__(self, optimizer, death_rate=0.3, growth_death_ratio=1.0, death_rate_decay=None, death_mode='magnitude', growth_mode='momentum', redistribution_mode='momentum', threshold=0.001, model='LSTM', args=False):
         growth_modes = ['random', 'momentum', 'momentum_neuron']
         if growth_mode not in growth_modes:
             print('Growth mode: {0} not supported!'.format(growth_mode))
             print('Supported modes are:', str(growth_modes))
-
+        self.args = args
         self.growth_mode = growth_mode
         self.death_mode = death_mode
         self.growth_death_ratio = growth_death_ratio
@@ -100,8 +106,15 @@ class Masking(object):
         self.growth_increment = 0.2
         self.increment = 0.2
         self.tolerance = 0.02
+
         self.prune_every_k_steps = None
 
+        # if fix, then we do not explore the sparse connectivity
+        # if self.args.fix: self.prune_every_k_steps = None
+        # else: self.prune_every_k_steps = self.args.update_frequency
+
+    # initialize self.mask with 'mode' and 'density'
+    # apply self.mask on model
     def init(self, mode='uniform', density=0.05):
         self.sparsity = density
         if mode == 'uniform':
@@ -136,7 +149,7 @@ class Masking(object):
                     if name not in self.masks: continue
                     # original SET formulation for fully connected weights: num_weights = epsilon * (noRows + noCols)
                     # we adapt the same formula for convolutional weights
-                    growth =  epsilon*sum(weight.shape)
+                    growth = epsilon*sum(weight.shape)
                     new_nonzeros += growth
                 current_params = new_nonzeros
                 if current_params > target_params:
@@ -147,7 +160,7 @@ class Masking(object):
 
             for name, weight in module.named_parameters():
                 if name not in self.masks: continue
-                growth =  epsilon*sum(weight.shape)
+                growth = epsilon*sum(weight.shape)
                 prob = growth/np.prod(weight.shape)
                 self.masks[name][:] = (torch.rand(weight.shape) < prob).float().data.cuda()
             self.apply_mask()
@@ -188,10 +201,11 @@ class Masking(object):
             self.optimizer.masks[5] = self.masks['rnn.cells.1.ih.0.weight'].clone()
             self.optimizer.masks[9] = self.masks['rnn.cells.2.ih.0.weight'].clone()
 
-    def at_end_of_epoch(self,epoch):
-        self.truncate_weights(epoch)
-        if 't0' in self.optimizer.param_groups[0]:
-            self.init_optimizer_mask()
+    def at_end_of_epoch(self, epoch):
+        if not self.args.fix:
+            self.truncate_weights(epoch)
+            if 't0' in self.optimizer.param_groups[0]:
+                self.init_optimizer_mask()
         self.print_nonzero_counts()
 
     def step(self):
@@ -204,10 +218,14 @@ class Masking(object):
         self.steps += 1
 
         if self.prune_every_k_steps is not None:
+            print(self.prune_every_k_steps)
             if self.steps % self.prune_every_k_steps == 0:
                 self.truncate_weights()
                 self.print_nonzero_counts()
 
+    # append 'module' into the self.module list, and append names and zeros matrices in self.names (dict) and
+    # self.masks (dict). Those zeros matrices have the same shape as weight matrices in module.
+    # Initialize self.mask with 'density' and 'sparse_init'
     def add_module(self, module, density, sparse_init='enforce_density_per_layer'):
         self.modules.append(module)
         for name, tensor in module.named_parameters():
@@ -247,6 +265,7 @@ class Masking(object):
                 if isinstance(module, nn_type):
                     self.remove_weight_partial_name(name, verbose=True)
 
+    # apply self.mask on modules' parameters
     def apply_mask(self):
         for module in self.modules:
             for name, tensor in module.named_parameters():
@@ -258,9 +277,11 @@ class Masking(object):
                             self.optimizer.state[tensor]['momentum_buffer'] = self.optimizer.state[tensor]['momentum_buffer']*self.masks[name]
                     # else:
                     #     print("This is not in optimizer")
+
     def truncate_weights(self, epoch):
+        print("truncating weights")
         self.gather_statistics()
-        name2regrowth = self.calc_growth_redistribution()
+        # name2regrowth = self.calc_growth_redistribution()
         name2regrowth = self.calc_growth_redistribution()
 
         total_nonzero_new = 0
@@ -369,7 +390,8 @@ class Masking(object):
         self.total_zero = 0.0
         for module in self.modules:
             for name, tensor in module.named_parameters():
-                if name not in self.masks: continue
+                if name not in self.masks:
+                    continue
                 mask = self.masks[name]
                 if 'rnn' in name:
                     self.redistribution_rnn(name, mask, tensor)
@@ -380,10 +402,8 @@ class Masking(object):
                     self.name2variance[name] = torch.abs(tensor)[mask.byte()].mean().item()
                 elif self.redistribution_mode == 'nonzeros':
                     self.name2variance[name] = float((torch.abs(tensor) > self.threshold).sum().item())
-                elif self.redistribution_mode == 'none':
+                elif self.redistribution_mode == 'none': # do not change the distribution
                     self.name2variance[name] = 1.0
-                elif self.redistribution_mode == 'uniform_distribution':
-                    self.name2variance[name] = 1
                 else:
                     print('Unknown redistribution mode:{0}'.format(self.redistribution_mode))
                     raise Exception('Unknown redistribution mode!')
@@ -627,7 +647,7 @@ class Masking(object):
         new_mask.data.view(-1)[idx[:total_regrowth]] = 1.0
 
         return new_mask
-    def momentum_neuron_growth(self, name, new_mask, total_regrowth, weight):
+    def x_neuron_growth(self, name, new_mask, total_regrowth, weight):
         grad = self.get_momentum_for_weight(weight)
 
         M = torch.abs(grad)

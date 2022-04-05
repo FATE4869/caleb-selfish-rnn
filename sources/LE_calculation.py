@@ -51,6 +51,7 @@ def evaluate(args, model, data_source, corpus, criterion):
     hidden = model.init_hidden(args.eval_batch_size)
 
     with torch.no_grad():
+        start = time.time()
         for i, idx in enumerate(range(0, data_source.size(0) - 1, args.bptt)):
             data, targets = get_batch(data_source, idx, args.bptt)
 
@@ -58,27 +59,55 @@ def evaluate(args, model, data_source, corpus, criterion):
             hidden = repackage_hidden(hidden)
             output_flat = output.view(-1, ntokens)
             total_loss += len(data) * criterion(output_flat, targets).item()
-            if i < 5:
+
+            if i < 1:
                 h = torch.zeros(args.nlayers, data.size(1), args.nhid).to(args.device)
                 c = torch.zeros(args.nlayers, data.size(1), args.nhid).to(args.device)
                 emb = model.drop(model.encoder(data))
                 params = (emb, (h, c))
                 LEs, rvals = calc_LEs_an(*params, model=model, rec_layer='lstm')
+
                 if i == 0:
                     LE_list = LEs
                 else:
                     LE_list = torch.cat([LE_list, LEs], dim=0)
                     # print(LEs, rvals)
+        # LE_maxs = torch.zeros(LEs.shape[0] * 2)
+        # LE_means = torch.zeros(LEs.shape[0] * 2)
+        # LE_mins = torch.zeros(LEs.shape[0] * 2)
+        # LE_vars = torch.zeros(LEs.shape[0] * 2)
+        # for j in range(LEs.shape[0]* 2):
+        #     LE_maxs[j] = torch.max(LE_list[j, :])
+        #     LE_mins[j] = torch.min(LE_list[j, :])
+        #     LE_means[j] = torch.mean(LE_list[j, :])
+        #     LE_vars[j] = torch.var(LE_list[j, :])
+        # import matplotlib.pyplot as plt
+        # plt.figure(1)
+        # plt.scatter(range(10), LE_means, label='mean', c='g')
+        # plt.scatter(range(10), LE_maxs, label='max', c='r')
+        # plt.scatter(range(10), LE_mins, label='min', c='b')
+        # plt.legend()
+        # plt.ylim([-11, 0])
+        # plt.show()
 
+        end = time.time()
+        print(f"Time to calculate LE with 50 samples: {end - start}")
         LEs_avg = torch.mean(LE_list, dim=0)
     return total_loss / (len(data_source) - 1), LEs_avg
 
-def cal_LEs_from_trained_model(args, model, val_data, corpus, trial_num=None, target_epoch=None):
+def cal_LEs_from_trained_model(args, model, val_data, corpus, trial_num=None):
     criterion = nn.CrossEntropyLoss()
-    # # Load the best saved model.
-    for i in range(0, 61):
+    # global
+    # path_models_des = f"/home/ws8/caleb/dataset/PTB/models/stacked_LSTM_pruned"
+    # path_LEs_des = f"/home/ws8/caleb/dataset/PTB/LEs/stacked_LSTM_pruned"
+
+    # local
+    path_models_des = f"../models/"
+    path_LEs_des = f"../LEs/"
+    # Load the best saved model.
+    for i in range(0, 100):
         start = time.time()
-        path_saved = f"models/stacked_LSTM_pruned/___e{i}___{trial_num}.pt"
+        path_saved = f"{path_models_des}/___e{i}___{trial_num}.pt"
         if not os.path.exists(path_saved):
             continue
         else:
@@ -93,51 +122,29 @@ def cal_LEs_from_trained_model(args, model, val_data, corpus, trial_num=None, ta
                 LEs_stats['LEs'] = LEs_avg
                 LEs_stats['current_loss'] = val_loss
                 LEs_stats['current_perplexity'] = math.exp(val_loss)
-                if not os.path.exists('LEs/stacked_LSTM'):
-                    os.mkdir('LEs/stacked_LSTM/')
-                pickle.dump(LEs_stats, open(f'LEs/stacked_LSTM_pruned/___e{i}___{trial_num}.pickle', 'wb'))
+
+                if not os.path.exists(path_LEs_des):
+                    os.mkdir(path_LEs_des)
+                pickle.dump(LEs_stats, open(f'{path_LEs_des}/___e{i}___{trial_num}.pickle', 'wb'))
         end = time.time()
         print(f"Time elpased: {end - start} s")
-def checkLEs(inputs_epoch, N, model_type, trials_num):
-    LEs = pickle.load(open(f'trials/lstm/LEs/e_{inputs_epoch}/{model_type}_{N}_trials_{trials_num}.pickle','rb'))
-    print(f'N: {N}, trials_num: {trials_num}, inputs_epoch: {inputs_epoch}, length: {len(LEs)}, keys are: {LEs[0].keys()}')
-    print()
 
-def main():
-    # for gru models
-    # N_s = [64]
-    # a_s = [2.0, 2.2, 2.5, 2.7, 3.0]
-    # for N in N_s:
-    #     for a in a_s:
-    #         cal_LEs_from_trained_model(N, a)
 
-    # for lstm models
-    parser = argparse.ArgumentParser(description='PyTorch implementation of Selfish-RNN')
-    args = parser.parse_args()
-    args.data = 'data/penn'
-    args.model = 'LSTM'
-    args.emsize = 1500
-    args.nhid = 1500
-    args.nlayers = 2
-    args.dropout = 0.65
-    args.tied = False
-    args.cuda = True
-    args.eval_batch_size = 10
-    args.bptt = 35
-    # torch.manual_seed(args.seed)
-    if torch.cuda.is_available():
-        if not args.cuda:
-            print("WARNING: You have a CUDA device, so you should probably run with --cuda")
+def LE_main(args):
     corpus = data.Corpus(args.data)
     ntokens = len(corpus.dictionary)
-    device = torch.device("cuda" if args.cuda else "cpu")
-    args.device = device
-    # val_data = batchify(corpus.valid, args.eval_batch_size).to(device)
-    val_data = batchify(corpus.test, args.eval_batch_size).to(device)
-    model = Stacked_LSTM(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.tied).to(device)
-    target_epoch = 30
-    for trial_num in range(173, 173 + 4):
-        cal_LEs_from_trained_model(args=args, model=model, val_data=val_data, corpus=corpus, trial_num=trial_num, target_epoch=target_epoch)
+
+    val_data = batchify(corpus.valid, args.eval_batch_size).to(args.device)
+    # val_data = batchify(corpus.test, args.eval_batch_size).to(args.device)
+
+    model = Stacked_LSTM(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.tied).to(args.device)
+    cal_LEs_from_trained_model(args=args, model=model, val_data=val_data, corpus=corpus, trial_num=args.seed)
 
 if __name__ == "__main__":
-    main()
+
+    starting_idx = 320
+    num_trials = 10
+    for trial_num in range(starting_idx, starting_idx + num_trials):
+        LE_main(trial_num)
+    # LE = pickle.load(open('../LEs/___e7___200.pickle', 'rb'))
+    # print(LE)
