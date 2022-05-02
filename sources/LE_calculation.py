@@ -18,7 +18,7 @@ from sources.models import Stacked_LSTM
 from sources.lyapunov import calc_LEs_an
 import os
 from sources import data
-
+from args import Args
 
 def repackage_hidden(h):
     """Wraps hidden states in new Tensors, to detach them from their history."""
@@ -91,7 +91,7 @@ def evaluate(args, model, data_source, corpus, criterion):
         # plt.show()
 
         end = time.time()
-        print(f"Time to calculate LE with 50 samples: {end - start}")
+        print(f"Time to calculate LE with 2 samples: {end - start}")
         LEs_avg = torch.mean(LE_list, dim=0)
     return total_loss / (len(data_source) - 1), LEs_avg
 
@@ -102,8 +102,11 @@ def cal_LEs_from_trained_model(args, model, val_data, corpus, trial_num=None):
     # path_LEs_des = f"/home/ws8/caleb/dataset/PTB/LEs/stacked_LSTM_pruned"
 
     # local
-    path_models_des = f"../models/"
-    path_LEs_des = f"../LEs/"
+    # path_models_des = f"../models/RigL"
+    # path_LEs_des = f"../LEs/RigL"
+    path_models_des = f'../models/stacked_LSTM_pruned'
+    path_LEs_des = f'../LEs/stacked_LSTM_pruned'
+
     # Load the best saved model.
     for i in range(0, 100):
         start = time.time()
@@ -112,7 +115,9 @@ def cal_LEs_from_trained_model(args, model, val_data, corpus, trial_num=None):
             continue
         else:
             with open(path_saved, 'rb') as f:
-                model.load_state_dict(torch.load(path_saved))
+                saved = torch.load(path_saved)
+                model = saved['model']
+                # model.load_state_dict(saved['model_state_dict'])
                 val_loss, LEs_avg = evaluate(args, model, val_data, corpus, criterion)
                 print('=' * 89)
                 print(f'| trial_num {trial_num} | At epoch {i} | val loss {val_loss:5.2f} | val ppl {math.exp(val_loss):8.2f}')
@@ -138,13 +143,14 @@ def LE_main(args):
     # val_data = batchify(corpus.test, args.eval_batch_size).to(args.device)
 
     model = Stacked_LSTM(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.tied).to(args.device)
-    cal_LEs_from_trained_model(args=args, model=model, val_data=val_data, corpus=corpus, trial_num=args.seed)
+    cal_LEs_from_trained_model(args=args, model=model, val_data=val_data, corpus=corpus, trial_num=args.trial_num)
 
 if __name__ == "__main__":
-
-    starting_idx = 320
-    num_trials = 10
-    for trial_num in range(starting_idx, starting_idx + num_trials):
-        LE_main(trial_num)
+    args = Args().args
+    LE_main(args)
+    # starting_idx = 100
+    # num_trials = 1
+    # for trial_num in range(starting_idx, starting_idx + num_trials):
+    #     LE_main(trial_num)
     # LE = pickle.load(open('../LEs/___e7___200.pickle', 'rb'))
     # print(LE)

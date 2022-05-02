@@ -51,25 +51,29 @@ class LinearDecay(object):
             return death_rate
 
 
-class Masking(object):
-    def __init__(self, optimizer, death_rate=0.3, growth_death_ratio=1.0, death_rate_decay=None, death_mode='magnitude', growth_mode='momentum', redistribution_mode='momentum', threshold=0.001, model='LSTM', args=False):
+class SelfishScheduler(object):
+    def __init__(self, model_type, optimizer, sparsity=0, death_rate=0.3, growth_death_ratio=1.0,
+                 death_mode='magnitude', growth_mode='momentum', redistribution_mode='momentum', death_rate_decay=None,
+                 threshold=0.001):
         growth_modes = ['random', 'momentum', 'momentum_neuron']
         if growth_mode not in growth_modes:
             print('Growth mode: {0} not supported!'.format(growth_mode))
             print('Supported modes are:', str(growth_modes))
-        self.args = args
-        self.growth_mode = growth_mode
-        self.death_mode = death_mode
+        self.model = model_type
+        self.optimizer = optimizer
+        self.sparsity = sparsity
+        self.death_rate = death_rate
         self.growth_death_ratio = growth_death_ratio
+        self.death_mode = death_mode
+        self.growth_mode = growth_mode
         self.redistribution_mode = redistribution_mode
         self.death_rate_decay = death_rate_decay
-        self.model = model
+        self.threshold = threshold
 
         self.masks = {}
         self.pruning_rate = {}
         self.modules = []
         self.names = []
-        self.optimizer = optimizer
 
         self.adjusted_growth = 0
         self.adjustments = []
@@ -89,10 +93,11 @@ class Masking(object):
         self.steps = 0
 
         # lstm stats
-        if self.model == 'LSTM':
+        if self.model_type == 'lstm':
             self.gate_num = 4
-        elif self.model == 'RHN':
+        elif self.model_type == 'gru':
             self.gate_num = 2
+
         self.gates_mask = {}
         self.gates_weight_grad = {}
         self.gates_nonzeros = {}
@@ -101,8 +106,7 @@ class Masking(object):
         self.gate2variance = {}
 
         # global growth/death state
-        self.threshold = threshold
-        self.growth_threshold = threshold
+        self.growth_threshold = self.threshold
         self.growth_increment = 0.2
         self.increment = 0.2
         self.tolerance = 0.02
@@ -113,7 +117,7 @@ class Masking(object):
         # if self.args.fix: self.prune_every_k_steps = None
         # else: self.prune_every_k_steps = self.args.update_frequency
 
-    # initialize self.mask with 'mode' and 'density'
+    # initialize self.mask with 'mode' and 'density' and then
     # apply self.mask on model
     def init(self, mode='uniform', density=0.05):
         self.sparsity = density
@@ -134,14 +138,15 @@ class Masking(object):
                 for name, weight in module.named_parameters():
                     if name not in self.masks: continue
                     total_params += weight.numel()
-                    self.baseline_nonzero += weight.numel()*density
+                    self.baseline_nonzero += weight.numel()* density
 
-            target_params = total_params *density
+            target_params = total_params * density
             tolerance = 5
             current_params = 0
             new_nonzeros = 0
             epsilon = 10.0
             growth_factor = 0.5
+
             # searching for the right epsilon for a specific sparsity level
             while not ((current_params+tolerance > target_params) and (current_params-tolerance < target_params)):
                 new_nonzeros = 0.0
@@ -158,17 +163,19 @@ class Masking(object):
                     epsilon *= 1.0 + growth_factor
                 growth_factor *= 0.95
 
+            # sparsity of each matrix: epsilon * (w + h) / (w * h)
             for name, weight in module.named_parameters():
                 if name not in self.masks: continue
                 growth = epsilon*sum(weight.shape)
                 prob = growth/np.prod(weight.shape)
                 self.masks[name][:] = (torch.rand(weight.shape) < prob).float().data.cuda()
             self.apply_mask()
+        else:
+            raise Exception('Unknown initialization mode!')
         self.init_death_rate(self.death_rate)
-        if self.args.verbose:
-            self.print_nonzero_counts()
+        self.print_nonzero_counts()
+        # initialize masks for SparseASGD
         if 't0' in self.optimizer.param_groups[0]:
-            # initialize masks for SparseASGD
             self.init_optimizer_mask()
 
     def init_death_rate(self, death_rate):
@@ -202,13 +209,14 @@ class Masking(object):
             self.optimizer.masks[5] = self.masks['rnn.cells.1.ih.0.weight'].clone()
             self.optimizer.masks[9] = self.masks['rnn.cells.2.ih.0.weight'].clone()
 
+    # at the end of epoch, truncate weight, then if asgd is used, init optimizer mask
+    # finally, print out non-zero stats in each layer.
     def at_end_of_epoch(self, epoch):
         if not self.args.fix:
             self.truncate_weights(epoch)
             if 't0' in self.optimizer.param_groups[0]:
                 self.init_optimizer_mask()
-        if self.args.verbose:
-            self.print_nonzero_counts()
+        self.print_nonzero_counts()
 
     def step(self):
         self.optimizer.step()
@@ -223,14 +231,19 @@ class Masking(object):
             print(self.prune_every_k_steps)
             if self.steps % self.prune_every_k_steps == 0:
                 self.truncate_weights()
-                if self.args.verbose:
-                    self.print_nonzero_counts()
+                self.print_nonzero_counts()
 
-    # append 'module' into the self.module list, and append names and zeros matrices in self.names (dict) and
-    # self.masks (dict). Those zeros matrices have the same shape as weight matrices in module.
+    # append 'module' into the self.module list, and append names and zeros matrices in
+    # self.names (dict) and self.masks (dict). Those zeros matrices have the same shape
+    # as weight matrices in module.
+    # Bias, batchNorm2d and batchNorm1d layers are removed
     # Initialize self.mask with 'density' and 'sparse_init'
-    def add_module(self, module, density, sparse_init='enforce_density_per_layer'):
+    def add_module(self, module, density, sparse_init_mode='enforce_density_per_layer'):
         self.modules.append(module)
+        # example for a two layers stacked LSTM
+        # self.names = ['encoder.weight', 'rnn.weight_ih_l0', 'rnn.weight_hh_l0',
+        #               'rnn.bias_ih_l0', 'rnn.bias_hh_l0', ... ,
+        #               'decoder.weight', 'decoder.bias']
         for name, tensor in module.named_parameters():
             self.names.append(name)
             self.masks[name] = torch.zeros_like(tensor, dtype=torch.float32, requires_grad=False).cuda()
@@ -238,32 +251,38 @@ class Masking(object):
         self.remove_type(nn.BatchNorm2d)
         self.remove_type(nn.BatchNorm1d)
         self.remove_type(nn.PReLU)
-        self.init(mode=sparse_init, density=density)
+        self.init(mode=sparse_init_mode, density=density)
 
+    # remove from self.names and self.masks with given 'name'
     def remove_weight(self, name):
+        # remove from self.names
+        if name in self.names:
+            self.names.pop(name)
+        # remove from self.masks
         if name in self.masks:
             print('Removing {0} of size {1} = {2} parameters.'.format(name, self.masks[name].shape, self.masks[name].numel()))
             self.masks.pop(name)
 
+    # remove from self.names and self.masks with given 'partial_name'
     def remove_weight_partial_name(self, partial_name, verbose=False):
         removed = set()
-        # remove self.masks
+        # remove from self.masks
         for name in list(self.masks.keys()):
             if partial_name in name:
                 if verbose:
-                    print(f'Removing {name}...')
+                    print('Removing {0}...'.format(name))
                 removed.add(name)
                 self.masks.pop(name)
-        print(f'Removed {len(removed)} layers.')
+        print('Removed {0} layers.'.format(len(removed)))
 
+        # remove from self.names
         i = 0
-        # remove self.names
         while i < len(self.names):
             name = self.names[i]
             if name in removed: self.names.pop(i)
             else: i += 1
 
-
+    # remove elements from self.names and self.masks with given 'nn_type'
     def remove_type(self, nn_type, verbose=False):
         for module in self.modules:
             for name, module in module.named_modules():
@@ -275,13 +294,11 @@ class Masking(object):
         for module in self.modules:
             for name, tensor in module.named_parameters():
                 if name in self.masks:
+                    # apply mask to weights
                     tensor.data = tensor.data*self.masks[name]
-                    if 'momentum_buffer' in self.optimizer.state[tensor]:
-                        # print("This is in optimizer")
-                        if self.optimizer.state[tensor]['momentum_buffer']:
+                    # also apply mask to momentum_buffer
+                    if 'momentum_buffer' in self.optimizer.state[tensor] and self.optimizer.state[tensor]['momentum_buffer']:
                             self.optimizer.state[tensor]['momentum_buffer'] = self.optimizer.state[tensor]['momentum_buffer']*self.masks[name]
-                    # else:
-                    #     print("This is not in optimizer")
 
     def truncate_weights(self, epoch):
         print("truncating weights")
@@ -369,11 +386,10 @@ class Masking(object):
         # Here we run an exponential smoothing over (death-growth) residuals to adjust future growth
         self.adjustments.append(self.baseline_nonzero - total_nonzero_new)
         self.adjusted_growth = 0.25*self.adjusted_growth + (0.75*(self.baseline_nonzero - total_nonzero_new)) + np.mean(self.adjustments)
-        if self.args.verbose:
-            print(self.total_nonzero, self.baseline_nonzero, self.adjusted_growth)
+        print(self.total_nonzero, self.baseline_nonzero, self.adjusted_growth)
 
-            if self.total_nonzero > 0:
-                print('old, new nonzero count:', self.total_nonzero, total_nonzero_new, self.adjusted_growth)
+        if self.total_nonzero > 0:
+            print('old, new nonzero count:', self.total_nonzero, total_nonzero_new, self.adjusted_growth)
 
     '''
                     REDISTRIBUTION
@@ -395,19 +411,20 @@ class Masking(object):
         self.total_nonzero = 0
         self.total_zero = 0.0
         for module in self.modules:
-            for name, tensor in module.named_parameters():
+            for name, param in module.named_parameters():
                 if name not in self.masks:
                     continue
                 mask = self.masks[name]
                 if 'rnn' in name:
-                    self.redistribution_rnn(name, mask, tensor)
+                    self.redistribution_rnn(name, mask, param) # self.name2variance[name] = 1/self.gate_num
                 if self.redistribution_mode == 'momentum':
-                    grad = self.get_momentum_for_weight(tensor)
-                    self.name2variance[name] = torch.abs(grad[mask.byte()]).mean().item()#/(V1val*V2val)
+                    grad = self.get_momentum_for_weight(param)
+                    # mask.byte() changes its dtype from float32 to uint8
+                    self.name2variance[name] = torch.abs(grad[mask.byte()]).mean().item()
                 elif self.redistribution_mode == 'magnitude':
-                    self.name2variance[name] = torch.abs(tensor)[mask.byte()].mean().item()
+                    self.name2variance[name] = torch.abs(param)[mask.byte()].mean().item()
                 elif self.redistribution_mode == 'nonzeros':
-                    self.name2variance[name] = float((torch.abs(tensor) > self.threshold).sum().item())
+                    self.name2variance[name] = float((torch.abs(param) > self.threshold).sum().item())
                 elif self.redistribution_mode == 'none': # do not change the distribution
                     self.name2variance[name] = 1.0
                 else:
@@ -424,8 +441,7 @@ class Masking(object):
                 if sparsity < 0.2:
                     expected_variance = 1.0/len(list(self.name2variance.keys()))
                     actual_variance = self.name2variance[name]
-                    expected_vs_actual = expected_variance/actual_variance
-                    if expected_vs_actual < 1.0:
+                    if expected_variance < actual_variance:
                         death_rate = min(sparsity, death_rate)
                 num_remove = math.ceil(death_rate*self.name2nonzeros[name])
                 self.total_removed += num_remove
@@ -639,9 +655,6 @@ class Masking(object):
 
     def momentum_growth(self, name, new_mask, total_regrowth, weight):
         grad = self.get_momentum_for_weight(weight)
-        if grad is None:
-            return new_mask
-        print("using momentum to growth")
         grad = grad*(new_mask==0).float()
         y, idx = torch.sort(torch.abs(grad).flatten(), descending=True)
         new_mask.data.view(-1)[idx[:total_regrowth]] = 1.0
@@ -686,6 +699,9 @@ class Masking(object):
     '''
                 UTILITY
     '''
+    # divides the mask, weight, weight.grad into gate_num chunks and save them into
+    # self.gate_mask[name]. self.gate_weight[name] and self.gates_weight_grad[name], respectively
+    # also count the number of zeros and nonzeros in each gate
     def redistribution_rnn(self, name, mask, weight):
         self.gates_mask[name] = torch.chunk(mask, self.gate_num, 0)
         self.gates_weight[name] = torch.chunk(weight, self.gate_num, 0)
@@ -710,6 +726,7 @@ class Masking(object):
         grad = weight.grad.clone()
         return grad
 
+
     def print_nonzero_counts(self):
         gate_name = ['i', 'f', 'c', 'o']
         for module in self.modules:
@@ -718,14 +735,23 @@ class Masking(object):
                 mask = self.masks[name]
                 num_nonzeros = (mask != 0).sum().item()
                 if name in self.name2variance:
-                    val = '{0}: {1}->{2}, density: {3:.3f}, proportion: {4:.4f}'.format(name, self.name2nonzeros[name], num_nonzeros, num_nonzeros/float(mask.numel()), self.name2variance[name])
-                    print(val)
+                    print(
+                        f"{name}: {self.name2nonzeros[name]} -> {num_nonzeros}, density: {num_nonzeros / float(mask.numel()):.3f},"
+                        f" proportion: {self.name2variance[name]:.4f}")
+                    #     '{0}: {1}->{2}, density: {3:.3f}, proportion: {4:.4f}'.format(name, self.name2nonzeros[name], num_nonzeros, num_nonzeros/float(mask.numel()), self.name2variance[name])
+                    # print(val)
                     if 'rnn' in name:
+                        # print detail in each rnn gate
                         newmasks_print = torch.chunk(mask, self.gate_num, 0)
                         num_newmasks_print = [(newmasks_print[i] != 0).sum().item() for i in range(self.gate_num)]
                         for i in range(len(num_newmasks_print)):
-                            val_gate = '{0}: {1}->{2}, density: {3:.3f}, proportion: {4:.4f}'.format(gate_name[i], self.gates_nonzeros[name][i], num_newmasks_print[i],num_newmasks_print[i] / float(newmasks_print[i].numel()), self.gate2variance[name][i])
-                            print(val_gate)
+                            print(f"{gate_name[i]}: {self.gates_nonzeros[name][i]} -> {num_newmasks_print[i]}, "
+                                  f"density: {num_newmasks_print[i] / float(newmasks_print[i].numel()):.3f}, "
+                                  f"proportion: {self.gate2variance[name][i]:.4f}")
+                            # val_gate = '{0}: {1}->{2}, density: {3:.3f}, proportion: {4:.4f}'.\
+                            #     format(gate_name[i], self.gates_nonzeros[name][i], num_newmasks_print[i],
+                            #            num_newmasks_print[i] / float(newmasks_print[i].numel()), self.gate2variance[name][i])
+                            # print(val_gate)
                 else:
                     print(name, num_nonzeros)
 

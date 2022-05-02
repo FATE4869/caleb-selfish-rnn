@@ -3,6 +3,7 @@ from torch.autograd import Variable
 from torch.nn import RNN, GRU, LSTM
 import numpy as np
 from tqdm import tqdm
+# from tqdm import tqdm
 import matplotlib.pyplot as plt
 import pickle as pkl
 import gc
@@ -101,7 +102,8 @@ def calc_LEs_an(*params, model, k_LE=100000, rec_layer='lstm', kappa=10, diff=10
     t = 0
 
     # Warmup
-    for xt in tqdm(x_in[:warmup]):
+
+    for xt in tqdm(x_in[:warmup], position=0, leave=True):
         xt = torch.unsqueeze(xt, 1)  # select t-th element in the fed sequence
         if cells:
             states = (ht, ct)
@@ -132,7 +134,7 @@ def calc_LEs_an(*params, model, k_LE=100000, rec_layer='lstm', kappa=10, diff=10
     #     print(ht[0])
 
     t_QR = t
-    for xt in tqdm(x_in):
+    for xt in tqdm(x_in, position=0, leave=True):
         if (t - t_QR) >= T_ons or t == 0 or t == feed_seq:
             QR = True
         else:

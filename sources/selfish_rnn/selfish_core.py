@@ -51,25 +51,29 @@ class LinearDecay(object):
             return death_rate
 
 
-class Masking(object):
-    def __init__(self, optimizer, death_rate=0.3, growth_death_ratio=1.0, death_rate_decay=None, death_mode='magnitude', growth_mode='momentum', redistribution_mode='momentum', threshold=0.001, model='LSTM', args=False):
+class SelfishScheduler(object):
+    def __init__(self, model, optimizer, sparsity=0, death_rate=0.3, growth_death_ratio=1.0,
+                 death_mode='magnitude', growth_mode='momentum', redistribution_mode='momentum', death_rate_decay=None,
+                 threshold=0.001):
         growth_modes = ['random', 'momentum', 'momentum_neuron']
         if growth_mode not in growth_modes:
             print('Growth mode: {0} not supported!'.format(growth_mode))
             print('Supported modes are:', str(growth_modes))
-        self.args = args
-        self.growth_mode = growth_mode
-        self.death_mode = death_mode
+        self.model = model
+        self.optimizer = optimizer
+        self.sparsity = sparsity
+        self.death_rate = death_rate
         self.growth_death_ratio = growth_death_ratio
+        self.death_mode = death_mode
+        self.growth_mode = growth_mode
         self.redistribution_mode = redistribution_mode
         self.death_rate_decay = death_rate_decay
-        self.model = model
+        self.threshold = threshold
 
         self.masks = {}
         self.pruning_rate = {}
         self.modules = []
         self.names = []
-        self.optimizer = optimizer
 
         self.adjusted_growth = 0
         self.adjustments = []
@@ -89,10 +93,8 @@ class Masking(object):
         self.steps = 0
 
         # lstm stats
-        if self.model == 'LSTM':
-            self.gate_num = 4
-        elif self.model == 'RHN':
-            self.gate_num = 2
+        self.gate_num = 4
+
         self.gates_mask = {}
         self.gates_weight_grad = {}
         self.gates_nonzeros = {}
@@ -101,8 +103,7 @@ class Masking(object):
         self.gate2variance = {}
 
         # global growth/death state
-        self.threshold = threshold
-        self.growth_threshold = threshold
+        self.growth_threshold = self.threshold
         self.growth_increment = 0.2
         self.increment = 0.2
         self.tolerance = 0.02
@@ -165,8 +166,7 @@ class Masking(object):
                 self.masks[name][:] = (torch.rand(weight.shape) < prob).float().data.cuda()
             self.apply_mask()
         self.init_death_rate(self.death_rate)
-        if self.args.verbose:
-            self.print_nonzero_counts()
+        self.print_nonzero_counts()
         if 't0' in self.optimizer.param_groups[0]:
             # initialize masks for SparseASGD
             self.init_optimizer_mask()
@@ -207,8 +207,7 @@ class Masking(object):
             self.truncate_weights(epoch)
             if 't0' in self.optimizer.param_groups[0]:
                 self.init_optimizer_mask()
-        if self.args.verbose:
-            self.print_nonzero_counts()
+        self.print_nonzero_counts()
 
     def step(self):
         self.optimizer.step()
@@ -223,8 +222,7 @@ class Masking(object):
             print(self.prune_every_k_steps)
             if self.steps % self.prune_every_k_steps == 0:
                 self.truncate_weights()
-                if self.args.verbose:
-                    self.print_nonzero_counts()
+                self.print_nonzero_counts()
 
     # append 'module' into the self.module list, and append names and zeros matrices in self.names (dict) and
     # self.masks (dict). Those zeros matrices have the same shape as weight matrices in module.
@@ -247,17 +245,15 @@ class Masking(object):
 
     def remove_weight_partial_name(self, partial_name, verbose=False):
         removed = set()
-        # remove self.masks
         for name in list(self.masks.keys()):
             if partial_name in name:
                 if verbose:
-                    print(f'Removing {name}...')
+                    print('Removing {0}...'.format(name))
                 removed.add(name)
                 self.masks.pop(name)
-        print(f'Removed {len(removed)} layers.')
+        print('Removed {0} layers.'.format(len(removed)))
 
         i = 0
-        # remove self.names
         while i < len(self.names):
             name = self.names[i]
             if name in removed: self.names.pop(i)
@@ -369,11 +365,10 @@ class Masking(object):
         # Here we run an exponential smoothing over (death-growth) residuals to adjust future growth
         self.adjustments.append(self.baseline_nonzero - total_nonzero_new)
         self.adjusted_growth = 0.25*self.adjusted_growth + (0.75*(self.baseline_nonzero - total_nonzero_new)) + np.mean(self.adjustments)
-        if self.args.verbose:
-            print(self.total_nonzero, self.baseline_nonzero, self.adjusted_growth)
+        print(self.total_nonzero, self.baseline_nonzero, self.adjusted_growth)
 
-            if self.total_nonzero > 0:
-                print('old, new nonzero count:', self.total_nonzero, total_nonzero_new, self.adjusted_growth)
+        if self.total_nonzero > 0:
+            print('old, new nonzero count:', self.total_nonzero, total_nonzero_new, self.adjusted_growth)
 
     '''
                     REDISTRIBUTION
@@ -639,9 +634,6 @@ class Masking(object):
 
     def momentum_growth(self, name, new_mask, total_regrowth, weight):
         grad = self.get_momentum_for_weight(weight)
-        if grad is None:
-            return new_mask
-        print("using momentum to growth")
         grad = grad*(new_mask==0).float()
         y, idx = torch.sort(torch.abs(grad).flatten(), descending=True)
         new_mask.data.view(-1)[idx[:total_regrowth]] = 1.0

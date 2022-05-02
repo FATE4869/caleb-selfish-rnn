@@ -41,9 +41,13 @@ class Sparse_ASGD(Optimizer):
                     continue
                 if layer in self.masks:
                     grad = p.grad.data
-                    if grad.is_sparse:
+                    if p.grad.is_sparse:
                         raise RuntimeError('ASGD does not support sparse gradients')
+                    # self.state is defined by this "defaultdict(dict)"
+                    # if self.state[p] was not defined, it adds p to the keys of self.state
+                    # and the value is an empty dict.
                     state = self.state[p]
+
                     # State initialization for sparse ASGD
                     if len(state) == 0:
                         state['step'] = torch.zeros_like(p.data)
