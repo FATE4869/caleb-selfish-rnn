@@ -72,15 +72,15 @@ def main():
     pickle.dump(trials, open('../trials/LE_trials_num_2_ind_0.pickle', 'wb'))
 
 def continue_competition():
-    starting_ind = 18000
-    max_evals = 40
+    starting_ind = 20000
+    max_evals = 30
     LE_based = True
     remaining_indices = np.array(range(starting_ind, starting_ind + max_evals))
     a = len(remaining_indices)
     if LE_based:
-        trials = pickle.load(open(f'../trials/LE_tpe_trials_num_{max_evals}_ind_{starting_ind}.pickle', 'rb'))
+        trials = pickle.load(open(f'../trials/LE_atpe_trials_num_{max_evals}_ind_{starting_ind}.pickle', 'rb'))
     else:
-        trials = pickle.load(open(f'../trials/PPL_tpe_trials_num_{max_evals}_ind_{starting_ind}.pickle', 'rb'))
+        trials = pickle.load(open(f'../trials/PPL_atpe_trials_num_{max_evals}_ind_{starting_ind}.pickle', 'rb'))
     distances = []
     for trial in trials.trials:
         distances.append(trial['result']['loss'])
@@ -94,7 +94,7 @@ def continue_competition():
     LE_distances = {}
     val_losses = {}
     test_losses = {}
-    remaining_indices = [20, 22]
+    remaining_indices = [18, 21]
     remaining_indices = [x + starting_ind for x in remaining_indices]
     epoch = 100
     # epoch = 6
