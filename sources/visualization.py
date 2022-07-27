@@ -45,9 +45,10 @@ def cal_distance(data, divider_indices, num_trials, num_epochs, starting_epoch=0
 def perplexity_compare(names, indices, num_epochs, labels=None, indices_candidates=[]):
     if labels is None:
         labels = names
-    # colors = cm.rainbow(np.linspace(0, 1, len(names)))
+    colors = cm.rainbow(np.linspace(0, 1, len(names)))
+    colors = ['p', 'g', 'r']
     # print(colors)
-    colors = cm.rainbow(np.linspace(0, 1, 4))
+    # colors = cm.rainbow(np.linspace(0, 1, 4))
     ppls = torch.zeros([len(names), num_epochs])
     divider_indices = []
     plt.figure()
@@ -66,19 +67,25 @@ def perplexity_compare(names, indices, num_epochs, labels=None, indices_candidat
                 ppls[i, epoch] = previous_ppl
 
         divider_indices.append(num_epochs * i)
-        # if i in indices_candidates:
-        #     plt.plot(range(6, num_epochs), ppls[i, 6: num_epochs], label=labels[i], color=colors[count])
-        #     count += 1
-        # else:
-        #     plt.plot(range(6, num_epochs), ppls[i, 6: num_epochs], label=labels[i], color='k')
+        if i != 0:
+            if i in indices_candidates:
+                # plt.plot(range(6, num_epochs), ppls[i, 6: num_epochs], label=labels[i], color=colors[count])
+                plt.plot(range(0, num_epochs), ppls[i, : num_epochs], label=labels[i], color=colors[count])
+                count += 1
+            else:
+                plt.plot(range(6, num_epochs), ppls[i, 6: num_epochs], label=labels[i], color=colors[i], linewidth=5)
+                plt.plot(range(num_epochs), ppls[i, : num_epochs], label=labels[i], color=colors[i], linewidth=5)
 
     # plt.legend()
+    plt.xticks([0, 10, 20, 30, 40, 50, 60], [])
+    plt.yticks([70, 80, 90, 100, 110, 120], [])
+    plt.ylim([70, 120])
     # plt.xlabel("epoch")
     # plt.ylabel("perplexity")
-    print(ppls[:, -1])
+    # print(ppls[:, -1])
     # print(ppls[indices_candidates, -1])
-    # plt.show()
-    return_candidates(ppls[1:].numpy(), num_trials=24, starting_epoch=4, incremental_epoch=2)
+    plt.show()
+    # return_candidates(ppls[1:].numpy(), num_trials=24, starting_epoch=4, incremental_epoch=2)
     # cal_distance(torch.flatten(ppls), divider_indices, num_trials=len(names)-1, num_epochs=10, starting_epoch=0)
 
 
@@ -120,7 +127,9 @@ def tsne(X, dim=2, divider_indices=None, names=None, labels=None, use_tsne=True,
 
 
     # colors = cm.rainbow(np.linspace(0, 1, len(names)))
-    colors = cm.rainbow(np.linspace(0, 1, 4))
+    colors = ['#00B0F0', '#50D935', '#582A33']
+    # colors = ['purple', 'g', 'r']
+    # colors = cm.rainbow(np.linspace(0, 1, 4))
     # print(colors)
     distances = np.zeros([len(divider_indices) - 2, divider_indices[1]])
 
@@ -139,36 +148,35 @@ def tsne(X, dim=2, divider_indices=None, names=None, labels=None, use_tsne=True,
 
     indices_candidates = return_candidates(distances, num_trials=len(names)-1)
     indices_candidates = [x + 1 for x in indices_candidates]
-    # indices_candidates = [23]
+    indices_candidates = []
     print(f'indices_candidates: {indices_candidates}')
+
     plt.figure(1)
     count = 0
     for ind in range(1, len(divider_indices) - 1):
         if ind in indices_candidates:
-            plt.scatter(range(divider_indices[1]), distances[ind - 1, :], label=labels[ind], color=colors[count])
+            plt.scatter(range(divider_indices[1]), distances[ind - 1, :], label=labels[ind], color=colors[ind+1])
             count += 1
         else:
-            plt.scatter(range(divider_indices[1]), distances[ind - 1, :], label=labels[ind], color='k')
+            plt.scatter(range(divider_indices[1]), distances[ind - 1, :], label=labels[ind], color=colors[ind])
 
-    plt.xlabel("epoch")
-    plt.ylabel("distance")
+    # plt.xlabel("epoch")
+    # plt.ylabel("distance")
     # plt.xlim([2.5, 4.5])
-    # plt.xticks([3, 5])
+    plt.xticks([0, 10, 20, 30, 40, 50, 60], [])
+    plt.yticks([0, 100, 200, 300], [])
     # plt.legend()
     plt.show()
+
     count = 0
     if (limited_samples is None): # use all the samples
         plt.figure(1)
-        plt.scatter(x_embedded[:, 0], x_embedded[:, 1], s=20, c='black')
+        # plt.scatter(x_embedded[:, 0], x_embedded[:, 1], s=20, c='black')
         if divider_indices is None:
             plt.plot(x_embedded[:, 0], x_embedded[:, 1])
             plt.scatter(x_embedded[0, 0], x_embedded[0, 1], s=100, c='blue')
         else:
             for i in range(len(divider_indices) - 1):
-                plt.scatter(x_embedded[divider_indices[i], 0], x_embedded[divider_indices[i], 1],
-                            s=100, c='blue') # starting point
-                plt.scatter(x_embedded[divider_indices[i+1]-1, 0], x_embedded[divider_indices[i+1]-1, 1],
-                            s=100, c='green') # ending point
                 if i in indices_candidates:
                     print(i)
                     plt.plot(
@@ -181,29 +189,35 @@ def tsne(X, dim=2, divider_indices=None, names=None, labels=None, use_tsne=True,
                     plt.plot(
                              x_embedded[divider_indices[i]: divider_indices[i+1], 0],
                              x_embedded[divider_indices[i]: divider_indices[i+1], 1],
-                             color='k',
+                             linewidth = 6,
+                             color=colors[i],
                              label=labels[i])
-            plt.legend()
+
+                plt.scatter(x_embedded[divider_indices[i], 0], x_embedded[divider_indices[i], 1],
+                            s=200, c='blue') # starting point
+                plt.scatter(x_embedded[divider_indices[i+1]-1, 0], x_embedded[divider_indices[i+1]-1, 1],
+                            s=200, c='green') # ending point
+            # plt.legend()
 
     else:
-        if divider_indices is None:
-            plt.plot(x_embedded[:, 0], x_embedded[:, 1])
-            # plt.scatter(x_embedded[6, 0], x_embedded[6, 1], s=100, c='orange')
-            # plt.scatter(x_embedded[5, 0], x_embedded[5, 1], s=100 , c='orange')
-            plt.scatter(x_embedded[0, 0], x_embedded[0, 0]+limited_samples, s=100, c='blue')
-        else:
-            for i in range(len(divider_indices) - 1):
-                # scatter every point as black dot
-                plt.scatter(x_embedded[divider_indices[i]: divider_indices[i] + limited_samples, 0],
-                            x_embedded[divider_indices[i]: divider_indices[i] + limited_samples, 1],
-                            s=20, c='black')
-                # scatter starting point of each model as blue dot
-                plt.scatter(x_embedded[divider_indices[i], 0], x_embedded[divider_indices[i], 1],
-                            s=100, c='blue')
+        # if divider_indices is None:
+        #     plt.plot(x_embedded[:, 0], x_embedded[:, 1])
+        #     # plt.scatter(x_embedded[6, 0], x_embedded[6, 1], s=100, c='orange')
+        #     # plt.scatter(x_embedded[5, 0], x_embedded[5, 1], s=100 , c='orange')
+        #     plt.scatter(x_embedded[0, 0], x_embedded[0, 0]+limited_samples, s=100, c='blue')
+        # else:
+        for i in range(len(divider_indices) - 1):
+            # scatter every point as black dot
+            plt.scatter(x_embedded[divider_indices[i]: divider_indices[i] + limited_samples, 0],
+                        x_embedded[divider_indices[i]: divider_indices[i] + limited_samples, 1],
+                        s=20, c='black')
+            # scatter starting point of each model as blue dot
+            plt.scatter(x_embedded[divider_indices[i], 0], x_embedded[divider_indices[i], 1],
+                        s=100, c='blue')
 
-                # scatter ending point of each model as green dot
-                plt.scatter(x_embedded[divider_indices[i] + limited_samples, 0], x_embedded[divider_indices[i] + limited_samples, 1],
-                            s=100, c='green')
+            # scatter ending point of each model as green dot
+            plt.scatter(x_embedded[divider_indices[i] + limited_samples, 0], x_embedded[divider_indices[i] + limited_samples, 1],
+                        s=100, c='green')
 
                 # # scatter ending point of each model as green dot
                 # plt.scatter(x_embedded[divider_indices[i+1]-1, 0], x_embedded[divider_indices[i+1]-1, 1],
@@ -219,48 +233,64 @@ def tsne(X, dim=2, divider_indices=None, names=None, labels=None, use_tsne=True,
                 #             'r-', markersize=20,
                 #              label=labels[i])
                 # else:
-                plt.plot(
-                        x_embedded[divider_indices[i]: divider_indices[i] + limited_samples + 1, 0],
-                        x_embedded[divider_indices[i]: divider_indices[i] + limited_samples + 1, 1],
-                        color=colors[i],
-                        label=labels[i])
-            plt.legend()
+            plt.plot(
+                    x_embedded[divider_indices[i]: divider_indices[i] + limited_samples + 1, 0],
+                    x_embedded[divider_indices[i]: divider_indices[i] + limited_samples + 1, 1],
+                    color=colors[i],
+                    label=labels[i])
+            # plt.legend()
     if use_tsne:
         plt.title("t-sne")
-    else:
-        plt.title("PCAs")
+    # else:
+        # plt.title("PCAs")
+    plt.axis('off')
     plt.show()
     print(x_embedded.shape)
     return indices_candidates
 
-
+def LE_plot(LEs):
+    n, d = LEs.shape
+    colors = cm.rainbow(np.linspace(0, 1, n))
+    for i in range(n):
+        plt.scatter(range(1500), LEs[i, :1500], color=colors[i])
+    plt.axis('off')
+    # plt.xlim([0, 1500])
+    # plt.ylim([])
 
 def main():
-    names = ['LEs/stacked_LSTM_full'] + ['LEs/stacked_LSTM_pruned'] * 24 # + ['LEs/RigL'] * 10
-    # indices = [161, 5000, 5007, 5009, 5012, 5021, 5022]
-    indices = [161] + np.linspace(5000, 5023, 24, dtype=int).tolist()
+    # names = ['LEs/stacked_LSTM_full'] + ['LEs/stacked_LSTM_pruned'] * 5 # + ['LEs/RigL'] * 10
+    # indices = [161, 163, 165, 167, 169, 171]
+    # labels = ['0', '0.2', '0,4', '0.6', '0.8', '0.9']
+
+    names = ['LEs/stacked_LSTM_full'] + ['LEs/stacked_LSTM_pruned'] * 2
+    indices = [161, 178, 179]
+    labels = ['ref', '1', '2']#, '3', '4']
+    # indices = [161] + np.linspace(5000, 5023, 24, dtype=int).tolist()
               # + np.linspace(1000, 1009, 10, dtype=int).tolist()
-    labels = []
+    # labels = ['0', '0.2', '0,4', '0.6', '0.8', '0.9']
     print(indices)
 
     sum = 0
     divider_indices = [0]
     for i, name in enumerate(names):
         # print(i, name, indices[i])
-        LE = LE_loading(folder_name=name, trial_index=indices[i], epochs=[1], num_epochs=4)
+        LE = LE_loading(folder_name=name, trial_index=indices[i], epochs=[1], num_epochs=60)
         sum += LE.shape[0]
-        if name == 'LEs/stacked_LSTM_full':
-            labels.append(['pr = 0'])
-        else:
-            labels.append([f'pr = 0.66 {indices[i]}'])
+        # if name == 'LEs/stacked_LSTM_full':
+        #     labels.append(['pr = 0'])
+        # else:
+        #     labels.append([f'pr = 0.66 {indices[i]}'])
         if i == 0:
             LEs = LE
         else:
             LEs = torch.concat([LEs, LE])
         divider_indices.append(sum)
     print(divider_indices)
+    # plt.figure()
+    # LE_plot(LEs)
+    # plt.show()
     indices_candidates = tsne(LEs, dim=2, divider_indices=divider_indices, names=names, labels=labels, use_tsne=False, limited_samples=None)
-    num_epochs = 100
-    perplexity_compare(names, indices, num_epochs, labels=labels, indices_candidates=None)
+    # num_epochs = 60
+    # perplexity_compare(names, indices, num_epochs, labels=labels)
 if __name__ == '__main__':
     main()

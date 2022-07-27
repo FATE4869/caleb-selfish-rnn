@@ -18,6 +18,7 @@ from models import Stacked_LSTM
 from lyapunov import calc_LEs_an
 import os
 import data
+import numpy as np
 from args import Args
 
 def repackage_hidden(h):
@@ -60,7 +61,7 @@ def evaluate(args, model, data_source, corpus, criterion):
             output_flat = output.view(-1, ntokens)
             total_loss += len(data) * criterion(output_flat, targets).item()
 
-            if i < 1:
+            if i < 5:
                 h = torch.zeros(args.nlayers, data.size(1), args.nhid).to(args.device)
                 c = torch.zeros(args.nlayers, data.size(1), args.nhid).to(args.device)
                 emb = model.drop(model.encoder(data))
@@ -72,10 +73,21 @@ def evaluate(args, model, data_source, corpus, criterion):
                 else:
                     LE_list = torch.cat([LE_list, LEs], dim=0)
                     # print(LEs, rvals)
-        # LE_maxs = torch.zeros(LEs.shape[0] * 2)
-        # LE_means = torch.zeros(LEs.shape[0] * 2)
-        # LE_mins = torch.zeros(LEs.shape[0] * 2)
-        # LE_vars = torch.zeros(LEs.shape[0] * 2)
+
+        LE_maxs = torch.zeros(10)
+        LE_means = torch.zeros(10)
+        LE_mins = torch.zeros(10)
+        LE_vars = torch.zeros(10)
+        LEs_avg = torch.zeros(10, 3000)
+        for i in range(10):
+            if i == 0:
+                LEs_avg[i] = LE_list[0]
+            else:
+                LEs_avg[i] = torch.mean(LE_list[:i], dim=0)
+            LE_maxs[i] = torch.max(LEs_avg[i])
+            LE_mins[i] = torch.min(LEs_avg[i])
+            LE_means[i] = torch.mean(LEs_avg[i])
+            LE_vars[i] = torch.var(LEs_avg[i])
         # for j in range(LEs.shape[0]* 2):
         #     LE_maxs[j] = torch.max(LE_list[j, :])
         #     LE_mins[j] = torch.min(LE_list[j, :])
@@ -108,7 +120,7 @@ def cal_LEs_from_trained_model(args, model, val_data, corpus, trial_num=None):
     path_LEs_des = f'../LEs/stacked_LSTM_pruned'
 
     # Load the best saved model.
-    for i in range(0, 101):
+    for i in range(100, 101):
         start = time.time()
         path_saved = f"{path_models_des}/___e{i}___{trial_num}.pt"
         if not os.path.exists(path_saved):
@@ -146,7 +158,21 @@ def LE_main(args):
     cal_LEs_from_trained_model(args=args, model=model, val_data=val_data, corpus=corpus, trial_num=args.trial_num)
 
 if __name__ == "__main__":
-    args = Args().args
+    starting_ind = 14000
+    max_evals = 20
+    remaining_indices = np.array(range(starting_ind, starting_ind + max_evals))
+    a = len(remaining_indices)
+    # trials = pickle.load(open(f'../trials/PPL_tpe_trials_num_20.pickle', 'rb'))
+    trials = pickle.load(open(f'../trials/PPL_tpe_trials_num_{max_evals}_ind_{starting_ind}.pickle', 'rb'))
+
+    trial = trials.trials[16]
+    args = trial['result']['args']
+    args.data = '/home/ws8/caleb/dataset/PTB/penn/'
+    print(args)
+    # args = Args().args
+    args.trial_num = 14016
+    args.eval_batch_size = 2
+    args.evaluate = '../models/stacked_LSTM_pruned/___e0___14008.pt'
     LE_main(args)
     # starting_idx = 100
     # num_trials = 1
