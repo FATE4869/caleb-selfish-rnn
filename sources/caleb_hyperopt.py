@@ -76,9 +76,6 @@ def main(args):
     args.log_interval = 200
     args.keep_train_from_path = None
 
-
-
-
     space = {
         "sparse_init": hp.choice("sparse_init", ['uniform', 'ER']),
         "growth": hp.choice("growth", ['random']),
